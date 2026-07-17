@@ -60,7 +60,7 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-openwrt-qualcommax-${{ github.event.inputs.openwrt_version }}-v18-
 
-      - name: 7. Injeksi Kode (Menggunakan File Utuh)
+      - name: 7. Injeksi Kode (Kombinasi File Utuh & Inject)
         working-directory: ./openwrt
         run: |
           echo "BUILD_DATE=$(date +%Y-%m-%d)" >> $GITHUB_ENV
@@ -71,16 +71,35 @@ jobs:
           mkdir -p target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/
           mkdir -p files/etc/hotplug.d/firmware/
           
-          # 1. Copy DTS dan Caldata (Penyebab utama 5GHz)
+          # 1. Copy DTS dan Caldata (Aman menggunakan file utuh)
           cp $GITHUB_WORKSPACE/custom-files/ipq5018-wpx8324.dts target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/
           cp $GITHUB_WORKSPACE/custom-files/11-ath11k-caldata files/etc/hotplug.d/firmware/
           
-          # 2. Timpa file pengaturan sistem dengan versi dari custom-files
-          cp $GITHUB_WORKSPACE/custom-files/ipq50xx.mk target/linux/qualcommax/image/ipq50xx.mk
+          # 2. Timpa script sistem (Aman menggunakan file utuh)
           cp $GITHUB_WORKSPACE/custom-files/platform.sh target/linux/qualcommax/ipq50xx/base-files/lib/upgrade/platform.sh
           cp $GITHUB_WORKSPACE/custom-files/02_network target/linux/qualcommax/ipq50xx/base-files/etc/board.d/02_network
           
-          # 3. Fallback sed untuk uboot-envtools (karena file tidak ada di custom-files)
+          # 3. Inject Profile WPX8324 ke ipq50xx.mk (Aman dari bug qcom/qcom/)
+          cat << 'EOF' >> target/linux/qualcommax/image/ipq50xx.mk
+
+          define Device/wpx8324_ap-mp03-5-c1
+            $(call Device/FitImageLzma)
+            $(call Device/UbiFit)
+            DEVICE_VENDOR := Lite-On
+            DEVICE_MODEL := WPX8324
+            DEVICE_DTS := ipq5018-wpx8324
+            DEVICE_DTS_CONFIG := config@mp03.5-c1
+            SOC := ipq5018
+            BLOCKSIZE := 128k
+            PAGESIZE := 2048
+            IMAGE_SIZE := 59392k
+            NAND_SIZE := 128m
+            DEVICE_PACKAGES := ath11k-firmware-ipq5018-qcn6122 ipq-wifi-yuncore_ax830 kmod-usb-dwc3-qcom kmod-usb-storage kmod-fs-vfat block-mount usbutils
+          endef
+          TARGET_DEVICES += wpx8324_ap-mp03-5-c1
+          EOF
+          
+          # 4. Fallback sed untuk uboot-envtools
           sed -i 's/yuncore,ax830|\\/wpx8324,ap-mp03-5-c1|\\\n\tyuncore,ax830|\\/g' package/boot/uboot-tools/uboot-envtools/files/qualcommax_ipq50xx || true
           
           for i in 1 2 3; do
