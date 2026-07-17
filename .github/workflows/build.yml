@@ -17,10 +17,10 @@ on:
           - 'v25.12.5'
           - 'v25.12.4'
       custom_packages:
-        description: 'Daftar Paket Tambahan (Gunakan tanda minus "-" untuk menghapus paket)'
+        description: 'Daftar Paket EKSTRA (Paket Modem & LuCI sudah tertanam otomatis)'
         required: false
         type: string
-        default: 'luci luci-ssl kmod-usb-net kmod-usb-net-qmi-wwan uqmi luci-proto-qmi kmod-usb-serial-option kmod-usb-serial kmod-usb-serial-wwan qmi-utils kmod-usb-acm kmod-usb-net-cdc-ncm kmod-usb-net-cdc-mbim umbim modemmanager luci-app-modemmanager usbutils iperf3 nano htop kmod-ath11k-pci'
+        default: ''
 
 jobs:
   build:
@@ -50,17 +50,17 @@ jobs:
       - name: 5. Clone Repositori OpenWrt
         run: git clone https://github.com/openwrt/openwrt.git ./openwrt
 
-      - name: 6. Atur Cache Build
+      - name: 6. Atur Cache Build (Nuke Cache v27)
         uses: actions/cache@v4
         with:
           path: |
             openwrt/dl
             openwrt/.ccache
-          key: ${{ runner.os }}-openwrt-qualcommax-${{ github.event.inputs.openwrt_version }}-v18
+          key: ${{ runner.os }}-openwrt-qualcommax-${{ github.event.inputs.openwrt_version }}-v27
           restore-keys: |
-            ${{ runner.os }}-openwrt-qualcommax-${{ github.event.inputs.openwrt_version }}-v18-
+            ${{ runner.os }}-openwrt-qualcommax-${{ github.event.inputs.openwrt_version }}-v27-
 
-      - name: 7. Injeksi Kode (Kombinasi File Utuh & Inject)
+      - name: 7. Injeksi Kode (Kombinasi File Utuh & Inject Paket Wajib)
         working-directory: ./openwrt
         run: |
           echo "BUILD_DATE=$(date +%Y-%m-%d)" >> $GITHUB_ENV
@@ -71,20 +71,23 @@ jobs:
           mkdir -p target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/
           mkdir -p files/etc/hotplug.d/firmware/
           
-          # 1. Copy DTS dan Caldata (Aman menggunakan file utuh)
+          # 1. Copy DTS dan Caldata
           cp $GITHUB_WORKSPACE/custom-files/ipq5018-wpx8324.dts target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/
           cp $GITHUB_WORKSPACE/custom-files/11-ath11k-caldata files/etc/hotplug.d/firmware/
           
-          # 2. Timpa script sistem (Aman menggunakan file utuh)
+          # 2. Timpa script sistem
           cp $GITHUB_WORKSPACE/custom-files/platform.sh target/linux/qualcommax/ipq50xx/base-files/lib/upgrade/platform.sh
           cp $GITHUB_WORKSPACE/custom-files/02_network target/linux/qualcommax/ipq50xx/base-files/etc/board.d/02_network
           
-          # 3. Inject Profile WPX8324 ke ipq50xx.mk (Aman dari bug qcom/qcom/)
-          cat << 'EOF' >> target/linux/qualcommax/image/ipq50xx.mk
+          # DAFTAR PAKET WAJIB (MANDATORY) - Tidak bisa dihapus oleh user
+          MANDATORY_PKGS="luci luci-ssl kmod-mii kmod-usb-net kmod-usb-wdm kmod-usb-net-qmi-wwan uqmi luci-proto-qmi kmod-usb-net-cdc-ether kmod-usb-serial-option kmod-usb-serial kmod-usb-serial-wwan qmi-utils kmod-usb-serial-qualcomm kmod-usb-acm kmod-usb-net-cdc-ncm kmod-usb-net-cdc-mbim umbim modemmanager luci-proto-modemmanager usbutils iperf3 usb-modeswitch kmod-usb-net-rndis nano htop pv openssh-sftp-server"
+          
+          # 3. Inject Profile WPX8324
+          cat << EOF >> target/linux/qualcommax/image/ipq50xx.mk
 
           define Device/wpx8324_ap-mp03-5-c1
-            $(call Device/FitImageLzma)
-            $(call Device/UbiFit)
+            \$(call Device/FitImageLzma)
+            \$(call Device/UbiFit)
             DEVICE_VENDOR := Lite-On
             DEVICE_MODEL := WPX8324
             DEVICE_DTS := ipq5018-wpx8324
@@ -94,7 +97,7 @@ jobs:
             PAGESIZE := 2048
             IMAGE_SIZE := 59392k
             NAND_SIZE := 128m
-            DEVICE_PACKAGES := ath11k-firmware-ipq5018-qcn6122 ipq-wifi-yuncore_ax830 kmod-usb-dwc3-qcom kmod-usb-storage kmod-fs-vfat block-mount usbutils
+            DEVICE_PACKAGES := ath11k-firmware-ipq5018-qcn6122 ipq-wifi-yuncore_ax830 kmod-usb-dwc3-qcom kmod-usb-storage kmod-fs-vfat block-mount $MANDATORY_PKGS ${{ github.event.inputs.custom_packages }}
           endef
           TARGET_DEVICES += wpx8324_ap-mp03-5-c1
           EOF
@@ -148,28 +151,79 @@ jobs:
         working-directory: ./openwrt
         run: |
           mkdir -p files/etc/uci-defaults
+          mkdir -p files/etc/apk/keys/
+          mkdir -p files/etc/apk/repositories.d/
+          
+          # Unduh Keys Repo
+          wget https://fantastic-packages.github.io/releases/25.12/20241123170031.pub -O files/etc/apk/keys/FantasticRepo.pub || true
+          wget https://github.com/4IceG/Modem-extras-apk/raw/refs/heads/main/myapk/IceG-apkpub.pem -O files/etc/apk/keys/IceG-apkpub.pem || true
+          
           cat << 'EOF' > files/etc/uci-defaults/99-custom-settings
           #!/bin/sh
+          
+          # 1. JARINGAN & DHCP
+          uci set network.lan.proto='static'
+          uci set network.lan.ipaddr='192.168.1.1'
+          uci set network.lan.netmask='255.255.255.0'
+          uci commit network
+          
+          uci set dhcp.lan=dhcp
+          uci set dhcp.lan.interface='lan'
+          uci set dhcp.lan.start='100'
+          uci set dhcp.lan.limit='150'
+          uci set dhcp.lan.leasetime='12h'
+          uci commit dhcp
+          
+          # 2. SISTEM & WAKTU
           uci set system.@system[0].timezone='WIB-7'
           uci set system.@system[0].zonename='Asia/Jakarta'
           uci set system.@system[0].hostname='WPX8324-BT'
           uci commit system
           
-          uci set wireless.default_radio0.ssid='WPX8324-BT'
-          uci set wireless.radio0.country='ID'
-          uci set wireless.radio0.disabled='0'
-          uci set wireless.radio0.channel='auto'
+          # 3. PENYIMPANAN UBI
+          mkdir -p /mnt/data2
+          mount -t ubifs /dev/ubi1_2 /mnt/data2 || true
+          uci add fstab mount
+          uci set fstab.@mount[-1].target='/mnt/data2'
+          uci set fstab.@mount[-1].device='/dev/ubi1_2'
+          uci set fstab.@mount[-1].fstype='ubifs'
+          uci set fstab.@mount[-1].options='rw,sync'
+          uci set fstab.@mount[-1].enabled='1'
+          uci commit fstab
+          /etc/init.d/fstab enable || true
           
-          if uci get wireless.radio1 > /dev/null 2>&1; then
-            uci set wireless.default_radio1.ssid='WPX8324-BT 5G'
-            uci set wireless.radio1.disabled='0'
-            uci set wireless.radio1.channel='auto'
-          fi
-          uci commit wireless
-          sed -i -e '/12d1:15c1/,+5d' /etc/usb-mode.json
-          sed -i -e '/413c:81d7/,+5d' /etc/usb-mode.json
-          wifi reload
-          wifi up
+          # 4. MODEM & CUSTOM REPO
+          sed -i -e '/12d1:15c1/,+5d' /etc/usb-mode.json || true
+          sed -i -e '/413c:81d7/,+5d' /etc/usb-mode.json || true
+          
+          echo "https://fantastic-packages.github.io/releases/25.12/packages/$(grep 'OPENWRT_ARCH' /etc/os-release | awk -F '\"' '{print $2}')/luci/packages.adb" >> /etc/apk/repositories.d/customfeeds.list
+          echo "https://fantastic-packages.github.io/releases/25.12/packages/$(grep 'OPENWRT_ARCH' /etc/os-release | awk -F '\"' '{print $2}')/packages/packages.adb" >> /etc/apk/repositories.d/customfeeds.list
+          echo 'https://github.com/4IceG/Modem-extras-apk/raw/refs/heads/main/myapk/packages.adb' >> /etc/apk/repositories.d/customfeeds.list
+          
+          # 5. WIFI (Background & Bridge ke LAN)
+          (
+            sleep 20
+            wifi config
+            sleep 2
+            
+            if uci get wireless.radio0 > /dev/null 2>&1; then
+              uci set wireless.radio0.disabled='0'
+              uci set wireless.default_radio0.ssid='WPX8324-BT'
+              uci set wireless.default_radio0.encryption='none'
+              uci set wireless.default_radio0.network='lan'
+            fi
+            
+            if uci get wireless.radio1 > /dev/null 2>&1; then
+              uci set wireless.radio1.disabled='0'
+              uci set wireless.default_radio1.ssid='WPX8324-BT 5G'
+              uci set wireless.default_radio1.encryption='none'
+              uci set wireless.default_radio1.network='lan'
+            fi
+            uci commit wireless
+            wifi reload
+            wifi up
+          ) &
+          
           exit 0
           EOF
           chmod +x files/etc/uci-defaults/99-custom-settings
@@ -184,9 +238,13 @@ jobs:
           echo 'CONFIG_TARGET_MULTI_PROFILE=y' >> .config
           echo 'CONFIG_TARGET_DEVICE_qualcommax_ipq50xx_DEVICE_wpx8324_ap-mp03-5-c1=y' >> .config
           
-          CUSTOM_PKGS="${{ github.event.inputs.custom_packages }}"
-          if [ -n "$CUSTOM_PKGS" ]; then
-            for pkg in $CUSTOM_PKGS; do
+          # DAFTAR PAKET WAJIB DIPAKSA ENABLE DI .CONFIG
+          MANDATORY_PKGS="luci luci-ssl kmod-mii kmod-usb-net kmod-usb-wdm kmod-usb-net-qmi-wwan uqmi luci-proto-qmi kmod-usb-net-cdc-ether kmod-usb-serial-option kmod-usb-serial kmod-usb-serial-wwan qmi-utils kmod-usb-serial-qualcomm kmod-usb-acm kmod-usb-net-cdc-ncm kmod-usb-net-cdc-mbim umbim modemmanager luci-proto-modemmanager usbutils iperf3 usb-modeswitch kmod-usb-net-rndis nano htop pv openssh-sftp-server"
+          EXTRA_PKGS="${{ github.event.inputs.custom_packages }}"
+          ALL_PKGS="$MANDATORY_PKGS $EXTRA_PKGS"
+          
+          if [ -n "$ALL_PKGS" ]; then
+            for pkg in $ALL_PKGS; do
               if [[ $pkg == -* ]]; then
                 clean_pkg="${pkg#-}"
                 echo "# CONFIG_PACKAGE_$clean_pkg is not set" >> .config
